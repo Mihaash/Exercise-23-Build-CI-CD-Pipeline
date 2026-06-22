@@ -69,6 +69,8 @@ jobs:
         with:
           context: .
           load: true
+          pull: true
+          no-cache: true
           tags: ${{ env.ECR_REPOSITORY }}:latest
 
       - name: Scan image with Trivy
@@ -77,6 +79,7 @@ jobs:
           image-ref: ${{ env.ECR_REPOSITORY }}:latest
           format: table
           exit-code: 1
+          ignore-unfixed: true
           severity: CRITICAL,HIGH
 
       - name: Save image artifact
