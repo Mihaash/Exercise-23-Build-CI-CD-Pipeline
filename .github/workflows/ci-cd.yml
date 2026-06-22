@@ -1,0 +1,203 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: my-app
+  GITOPS_REPO: my-org/gitops-config
+  GITOPS_BRANCH: main
+  APP_NAME: my-app
+
+jobs:
+  test:
+    name: Unit Tests & Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest bandit safety
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: SAST scan with Bandit
+        run: bandit -r . -c bandit.yaml || true
+        continue-on-error: true
+
+      - name: Dependency scan with Safety
+        run: safety check -r requirements.txt --full-report || true
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            .pytest_cache/
+            test-results/
+
+  docker-build:
+    name: Docker Build & Scan
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.ECR_REPOSITORY }}:latest
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+      - name: Save image artifact
+        run: docker save ${{ env.ECR_REPOSITORY }}:latest | gzip > image.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar.gz
+
+  push-to-ecr:
+    name: Push to Amazon ECR
+    needs: docker-build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load and tag image
+        run: |
+          gunzip -c image.tar.gz | docker load
+          IMAGE_TAG="${{ github.sha }}"
+          docker tag ${{ env.ECR_REPOSITORY }}:latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          docker tag ${{ env.ECR_REPOSITORY }}:latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Push to ECR
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Output image URI
+        id: image-uri
+        run: |
+          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE_URI="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+    outputs:
+      image_uri: ${{ steps.image-uri.outputs.image_uri }}
+
+  gitops-update:
+    name: GitOps Manifest Update
+    needs: push-to-ecr
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          ref: ${{ env.GITOPS_BRANCH }}
+
+      - name: Update image tag in Kustomize manifest
+        run: |
+          cd overlays/production
+          kustomize edit set image \
+            ${{ env.APP_NAME }}=${{ needs.push-to-ecr.outputs.image_uri }}
+
+      - name: Commit and push
+        run: |
+          git config user.name "CI/CD Bot"
+          git config user.email "cicd@example.com"
+          git add .
+          git diff --staged --quiet || \
+            (git commit -m "chore: update ${{ env.APP_NAME }} image to ${{ github.sha }}" \
+             && git push)
+
+  argocd-deploy:
+    name: ArgoCD Deploy
+    needs: gitops-update
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
+
+      - name: Login to ArgoCD
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} \
+            --username ${{ secrets.ARGOCD_USERNAME }} \
+            --password ${{ secrets.ARGOCD_PASSWORD }} \
+            --insecure \
+            --grpc-web
+
+      - name: Sync application
+        run: |
+          argocd app sync ${{ env.APP_NAME }} \
+            --grpc-web \
+            --timeout 300 \
+            --prune
+
+      - name: Wait for healthy status
+        run: |
+          argocd app wait ${{ env.APP_NAME }} \
+            --grpc-web \
+            --timeout 300 \
+            --health
