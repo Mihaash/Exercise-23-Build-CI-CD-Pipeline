@@ -190,38 +190,4 @@ jobs:
           git diff --staged --quiet || \
             (git commit -m "chore: update image" && git push)
 
-  argocd-deploy:
-    name: ArgoCD Deploy
-    needs: gitops-update
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
-    steps:
-      - name: Install ArgoCD CLI
-        run: |
-          curl -sSL -o argocd \
-            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x argocd
-          sudo mv argocd /usr/local/bin/
-
-      - name: Login to ArgoCD
-        run: |
-          argocd login ${{ secrets.ARGOCD_SERVER }} \
-            --username ${{ secrets.ARGOCD_USERNAME }} \
-            --password ${{ secrets.ARGOCD_PASSWORD }} \
-            --insecure \
-            --grpc-web
-
-      - name: Sync application
-        run: |
-          argocd app sync ${{ env.APP_NAME }} \
-            --grpc-web \
-            --timeout 300 \
-            --prune
-
-      - name: Wait for healthy status
-        run: |
-          argocd app wait ${{ env.APP_NAME }} \
-            --grpc-web \
-            --timeout 300 \
-            --health
