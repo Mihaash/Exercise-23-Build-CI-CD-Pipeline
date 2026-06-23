@@ -169,7 +169,7 @@ jobs:
 
       - name: Update image tag in Kustomize manifest
         run: |
-          cd overlays/production
+          cd manifests/overlays/production
           kustomize edit set image \
             ${{ env.APP_NAME }}=${{ needs.push-to-ecr.outputs.image_uri }}
 
