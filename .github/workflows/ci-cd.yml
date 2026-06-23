@@ -13,8 +13,7 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: my-app
-  GITOPS_REPO: Mihaash/gitops-config
-  GITOPS_BRANCH: main
+
   APP_NAME: my-app
 
 jobs:
@@ -165,12 +164,8 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
-      - name: Checkout GitOps repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          repository: ${{ env.GITOPS_REPO }}
-          token: ${{ secrets.GITOPS_TOKEN }}
-          ref: ${{ env.GITOPS_BRANCH }}
 
       - name: Update image tag in Kustomize manifest
         run: |
