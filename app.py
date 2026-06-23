@@ -1,9 +1,7 @@
 import os
 from flask import Flask, jsonify
-
 app = Flask(__name__)
-
-
+#test
 @app.route("/")
 def index():
     return jsonify({"status": "ok", "message": "Hello from Flask!"})
