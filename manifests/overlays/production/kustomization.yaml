@@ -22,4 +22,4 @@ resources:
 images:
 - name: my-app
   newName: 539536562581.dkr.ecr.us-east-1.amazonaws.com/my-app
-  newTag: a3014ad88c0cf9de358e743490659e22a9dc11b2
+  newTag: 50401f8f781f684f0c5d4ceda112fb1228dc4d2d
